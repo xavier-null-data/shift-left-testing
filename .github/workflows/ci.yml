@@ -1,0 +1,171 @@
+name: CodeFlow CI (Shift Left POC)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - develop
+  push:
+    branches-ignore:
+      - develop
+    paths-ignore:
+      - ".github/**"
+
+jobs:
+  php-lint:
+    name: Laravel Pint Check
+    runs-on: ubuntu-latest
+    outputs:
+      lint_status: ${{ steps.lint.outputs.lint_status }}
+      lint_summary: ${{ steps.lint.outputs.lint_summary }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, bcmath, intl
+          coverage: none
+
+      - name: Cache composer deps
+        uses: actions/cache@v3
+        with:
+          path: vendor
+          key: ${{ runner.os }}-deps-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-deps-
+
+      - name: Instalar dependencias
+        run: composer install --no-progress --prefer-dist --no-suggest
+
+      - name: Ejecutar artisan básicos
+        run: |
+          php artisan config:clear || true
+          php artisan cache:clear || true
+
+      - name: Instalar Laravel Pint temporalmente
+        run: composer global require laravel/pint --no-progress --no-suggest
+
+      - name: Run Laravel Pint (solo archivos modificados)
+        id: lint
+        continue-on-error: true
+        run: |
+          echo "Buscando archivos PHP modificados..."
+          BASE_BRANCH=${{ github.event.pull_request.base.ref || 'develop' }}
+          echo "Rama base detectada: $BASE_BRANCH"
+          git fetch origin $BASE_BRANCH --depth=1 || exit 0
+
+          CHANGED_FILES=$(git diff --name-only origin/$BASE_BRANCH | grep '\.php$' || true)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No hay archivos PHP modificados. Saltando lint."
+            echo "lint_status=skipped" >> $GITHUB_OUTPUT
+            echo "lint_summary=Sin archivos PHP modificados" >> $GITHUB_OUTPUT
+          else
+            ~/.composer/vendor/bin/pint --test $CHANGED_FILES | tee pint_output.txt
+            EXIT_CODE=${PIPESTATUS[0]}
+            SUMMARY=$(grep -E "FAIL|PASSED" pint_output.txt | tail -n 1 | sed 's/\"//g')
+            echo "lint_summary=$SUMMARY" >> $GITHUB_OUTPUT
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "lint_status=success" >> $GITHUB_OUTPUT
+            else
+              echo "lint_status=failure" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  laravel-ci:
+    name: Laravel CI (Smoke / Critical / Complete)
+    runs-on: ubuntu-latest
+    needs: [php-lint]
+
+    env:
+      APP_ENV: testing
+      APP_KEY: base64:ZmFrZV9hcHBfa2V5X2Zvcl9jaQ==
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ":memory:"
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, bcmath, intl
+          coverage: none
+
+      - name: Cache composer deps
+        uses: actions/cache@v3
+        with:
+          path: vendor
+          key: ${{ runner.os }}-deps-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-deps-
+
+      - name: Instalar dependencias
+        run: composer install --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Configurar entorno limpio
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          echo "APP_ENV=testing" >> .env
+          echo "DB_CONNECTION=sqlite" >> .env
+          echo "DB_DATABASE=:memory:" >> .env
+
+      - name: Instalar yq
+        uses: mikefarah/yq@v4.44.3
+        with:
+          cmd: --version
+
+      - name: Extraer suites de test
+        id: extract
+        run: |
+          if [ ! -f .github/test-input.yml ]; then
+            echo "No se encontró .github/test-input.yml"
+            exit 0
+          fi
+
+          SMOKE=$(yq -r '.smoke // [] | join(" ")' .github/test-input.yml)
+          CRITICAL=$(yq -r '."critical-suite" // [] | join(" ")' .github/test-input.yml)
+          COMPLETE=$(yq -r '."complete-suite" // [] | join(" ")' .github/test-input.yml)
+
+          echo "smoke=$SMOKE" >> $GITHUB_OUTPUT
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "complete=$COMPLETE" >> $GITHUB_OUTPUT
+
+      - name: Ejecutar pruebas Smoke
+        id: smoke
+        if: steps.extract.outputs.smoke != ''
+        run: |
+          echo "Ejecución Smoke suite:"
+          vendor/bin/phpunit ${{ steps.extract.outputs.smoke }}
+
+      - name: Ejecutar pruebas Críticas
+        id: critical
+        if: >
+          github.event_name == 'pull_request' &&
+          startsWith(github.head_ref, 'hotfix/') &&
+          steps.extract.outputs.critical != ''
+        run: |
+          echo "Ejecución Critical suite:"
+          vendor/bin/phpunit ${{ steps.extract.outputs.critical }}
+
+      - name: Ejecutar pruebas Completas
+        id: complete
+        if: >
+          github.event_name == 'pull_request' &&
+          !startsWith(github.head_ref, 'hotfix/') &&
+          steps.extract.outputs.complete != ''
+        run: |
+          echo "Ejecución Complete suite:"
+          vendor/bin/phpunit ${{ steps.extract.outputs.complete }}
+
+      - name: Notificar estado en Slack
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: >
+            {"text":"[CodeFlow CI]\nEstado general: ${{ job.status }}\nLint: ${{ needs.php-lint.outputs.lint_status }} (${{ needs.php-lint.outputs.lint_summary }})\nSmoke: ${{ steps.smoke.outcome || 'no ejecutado' }}\nCritical: ${{ steps.critical.outcome || 'no ejecutado' }}\nComplete: ${{ steps.complete.outcome || 'no ejecutado' }}\nBranch: ${{ github.head_ref || github.ref_name }}\nAutor: ${{ github.actor }}"}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

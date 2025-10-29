@@ -1,0 +1,8 @@
+smoke:
+  - tests/Feature/SmokeTest.php
+
+critical-suite:
+  - tests/Unit/DummyUnitTest.php
+
+complete-suite:
+  - tests/Feature/IntegrationTest.php

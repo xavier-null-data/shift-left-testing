@@ -88,6 +88,10 @@ jobs:
     needs: [php-lint]
     continue-on-error: true # si Larastan falla, igual seguimos con el pipeline
 
+    # exportamos el estado real de Larastan (success/failure) como output
+    outputs:
+      larastan_status: ${{ steps.analyze.outputs.larastan_status }}
+
     # detectar vulnerabilidades, queries inseguras,
     # y problemas de tipos o propiedades no definidas antes de los tests
     steps:
@@ -110,12 +114,22 @@ jobs:
       - name: Install dependencies
         run: composer install --no-progress --prefer-dist
 
-      # analizamos el proyecto con Larastan
+      # analizamos el proyecto con Larastan y guardamos el exit code real
       - name: Run Larastan (PHPStan for Laravel)
-        id: larastan
+        id: analyze
         run: |
-          vendor/bin/phpstan analyse --memory-limit=1G --no-progress || true
-          echo "status=done" >> $GITHUB_OUTPUT
+          # ejecuta Larastan y captura su código de salida (0=OK, distinto de 0=errores)
+          vendor/bin/phpstan analyse --memory-limit=1G --no-progress || EXIT_CODE=$?
+          if [ -z "$EXIT_CODE" ]; then
+            EXIT_CODE=0
+          fi
+
+          # si hubo errores, guardamos failure; si no, success
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "larastan_status=failure" >> $GITHUB_OUTPUT
+          else
+            echo "larastan_status=success" >> $GITHUB_OUTPUT
+          fi
 
   laravel-ci:
     name: Laravel CI (Smoke / Critical / Complete)
@@ -219,6 +233,6 @@ jobs:
         uses: slackapi/slack-github-action@v1.24.0
         with:
           payload: >
-            {"text":"[CodeFlow CI]\nEstado general: ${{ job.status }}\nLint: ${{ needs.php-lint.outputs.lint_status }} (${{ needs.php-lint.outputs.lint_summary }})\nLarastan: ${{ needs.larastan-analyze.result }}\nSmoke: ${{ steps.smoke.outcome || 'no ejecutado' }}\nCritical: ${{ steps.critical.outcome || 'no ejecutado' }}\nComplete: ${{ steps.complete.outcome || 'no ejecutado' }}\nBranch: ${{ github.head_ref || github.ref_name }}\nAutor: ${{ github.actor }}"}
+            {"text":"[CodeFlow CI]\nEstado general: ${{ job.status }}\nLint: ${{ needs.php-lint.outputs.lint_status }} (${{ needs.php-lint.outputs.lint_summary }})\nLarastan: ${{ needs.larastan-analyze.outputs.larastan_status }}\nSmoke: ${{ steps.smoke.outcome || 'no ejecutado' }}\nCritical: ${{ steps.critical.outcome || 'no ejecutado' }}\nComplete: ${{ steps.complete.outcome || 'no ejecutado' }}\nBranch: ${{ github.head_ref || github.ref_name }}\nAutor: ${{ github.actor }}"}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -1,0 +1,17 @@
+includes:
+    - vendor/nunomaduro/larastan/extension.neon
+
+services:
+    -
+        class: PHPStanRules\NoDirectWhereOnOrganizationIdRule
+        tags:
+            - phpstan.rules.rule
+
+parameters:
+    paths:
+        - app
+        - routes
+        - database
+        - phpstan-rules
+    level: 6
+    checkModelProperties: true

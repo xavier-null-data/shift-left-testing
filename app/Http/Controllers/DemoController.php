@@ -8,7 +8,7 @@ class DemoController extends Controller
     public function index(): mixed
     {
         $users = \DB::table('users')
-            ->where('organization_id', 6)
+            ->where('organization_id', 7)
             ->get();
 
         return $users;

@@ -116,7 +116,7 @@ jobs:
       - name: Instalar yq
         uses: mikefarah/yq@v4.44.3
         with:
-          cmd: --version
+          args: --version
 
       - name: Extraer suites de test
         id: extract

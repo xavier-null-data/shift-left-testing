@@ -236,3 +236,60 @@ jobs:
             {"text":"[CodeFlow CI]\nEstado general: ${{ job.status }}\nLint: ${{ needs.php-lint.outputs.lint_status }} (${{ needs.php-lint.outputs.lint_summary }})\nLarastan: ${{ needs.larastan-analyze.outputs.larastan_status }}\nSmoke: ${{ steps.smoke.outcome || 'no ejecutado' }}\nCritical: ${{ steps.critical.outcome || 'no ejecutado' }}\nComplete: ${{ steps.complete.outcome || 'no ejecutado' }}\nBranch: ${{ github.head_ref || github.ref_name }}\nAutor: ${{ github.actor }}"}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+post-merge-smoke:
+  name: Post-Merge Smoke (Develop)
+  runs-on: ubuntu-latest
+  if: github.event_name == 'push' && github.ref_name == 'develop'
+  env:
+    APP_ENV: testing
+    APP_KEY: base64:ZmFrZV9hcHBfa2V5X2Zvcl9jaQ==
+    DB_CONNECTION: sqlite
+    DB_DATABASE: ":memory:"
+  steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.3'
+        extensions: mbstring, bcmath, intl
+        coverage: none
+
+    - name: Instalar dependencias
+      run: composer install --no-progress --prefer-dist --optimize-autoloader
+
+    - name: Configurar entorno limpio
+      run: |
+        cp .env.example .env
+        php artisan key:generate
+        echo "APP_ENV=testing" >> .env
+        echo "DB_CONNECTION=sqlite" >> .env
+        echo "DB_DATABASE=:memory:" >> .env
+
+    - name: Instalar yq
+      uses: mikefarah/yq@v4.44.3
+
+    - name: Ejecutar Smoke suite post-merge
+      id: post_smoke
+      run: |
+        if [ ! -f .github/test-input.yml ]; then
+          echo "Archivo de configuración de tests no encontrado"
+          exit 0
+        fi
+        SMOKE=$(yq -r '.smoke // [] | join(" ")' .github/test-input.yml)
+        if [ -z "$SMOKE" ]; then
+          echo "No hay smoke tests definidos."
+          exit 0
+        fi
+        echo "Ejecutando smoke suite post-merge..."
+        vendor/bin/phpunit $SMOKE
+
+    - name: Notificar resultado post-merge en Slack
+      if: always()
+      uses: slackapi/slack-github-action@v1.24.0
+      with:
+        payload: >
+          {"text":"[CodeFlow CI - Post Merge]\nEstado general: ${{ job.status }}\nSmoke suite ejecutada tras merge a develop.\nBranch: ${{ github.ref_name }}\nAutor: ${{ github.actor }}"}
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
